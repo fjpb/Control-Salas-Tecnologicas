@@ -1,0 +1,60 @@
+services:
+  salas-mysql:
+    image: mysql:8.4
+    container_name: salas-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root123
+      MYSQL_DATABASE: bd_sgtsl
+      MYSQL_USER: sgtsl
+      MYSQL_PASSWORD: sgtsl123
+    volumes:
+      - salas_mysql_data:/var/lib/mysql
+      - ./mysql/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD","mysqladmin","ping","-h","localhost","-proot123"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - salas-network
+
+  salas-backend:
+    build:
+      context: ./backend
+    container_name: salas-backend
+    restart: unless-stopped
+    depends_on:
+      salas-mysql:
+        condition: service_healthy
+    environment:
+      PORT: 3000
+      DB_HOST: salas-mysql
+      DB_PORT: 3306
+      DB_NAME: bd_sgtsl
+      DB_USER: sgtsl
+      DB_PASSWORD: sgtsl123
+      JWT_SECRET: sgtsl_clave_segura_2026
+      JWT_EXPIRES_IN: 8h
+    networks:
+      - salas-network
+
+  salas-nginx:
+    build:
+      context: .
+      dockerfile: nginx/Dockerfile
+    container_name: salas-nginx
+    restart: unless-stopped
+    depends_on:
+      - salas-backend
+    ports:
+      - "8083:80"
+    networks:
+      - salas-network
+
+volumes:
+  salas_mysql_data:
+
+networks:
+  salas-network:
+    driver: bridge

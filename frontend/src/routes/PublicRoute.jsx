@@ -1,0 +1,16 @@
+﻿// Ruta pública del SGTSL.
+// Evita que un usuario con sesión activa vuelva manualmente al login.
+
+import { Navigate } from 'react-router-dom';
+
+function PublicRoute({ children }) {
+  const token = localStorage.getItem('sgtsl_token');
+
+  if (token) {
+    return <Navigate to="/dashboard" replace />;
+  }
+
+  return children;
+}
+
+export default PublicRoute;

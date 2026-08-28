@@ -1,0 +1,2085 @@
+﻿// Página de incidencias técnicas del SGTSL.
+// Permite registrar incidencias, subir evidencias, visualizar tickets,
+// asociar ticket institucional y cambiar el estado de atención.
+
+import { useEffect, useMemo, useState } from "react";
+import Swal from "sweetalert2";
+
+import MainLayout from "../../layouts/MainLayout";
+import { obtenerCatalogos } from "../../services/catalogosService";
+import { obtenerEquiposPorSala } from "../../services/revisionesService";
+
+import {
+  listarIncidencias,
+  registrarIncidencia,
+  editarIncidencia,
+  cambiarEstadoIncidencia,
+  reabrirIncidencia,
+  subirEvidenciaIncidencia,
+  listarEvidenciasIncidencia,
+  obtenerHistorialIncidencia,
+} from "../../services/incidenciasService";
+
+const API_URL = "http://localhost:3000";
+
+function obtenerUrlEvidencia(incidencia) {
+  if (!incidencia?.evidencia_ruta) {
+    return "";
+  }
+
+  const version = encodeURIComponent(
+    `${incidencia.id_incidencia}-${incidencia.evidencia_ruta}`,
+  );
+
+  return `${API_URL}${incidencia.evidencia_ruta}?v=${version}`;
+}
+
+
+function obtenerUrlEvidenciaPorRuta(rutaArchivo, versionReferencia = "") {
+  if (!rutaArchivo) {
+    return "";
+  }
+
+  const version = encodeURIComponent(versionReferencia || rutaArchivo);
+
+  return `${API_URL}${rutaArchivo}?v=${version}`;
+}
+
+function IncidenciasPage({ vista = "completa" }) {
+  const [edificios, setEdificios] = useState([]);
+  const [salas, setSalas] = useState([]);
+  const [tiposIncidencia, setTiposIncidencia] = useState([]);
+  const [estadosIncidencia, setEstadosIncidencia] = useState([]);
+  const [equipos, setEquipos] = useState([]);
+  const [incidencias, setIncidencias] = useState([]);
+
+  const [idEdificio, setIdEdificio] = useState("");
+  const [idSala, setIdSala] = useState("");
+  const [idEquipo, setIdEquipo] = useState("");
+  const [idTipoIncidencia, setIdTipoIncidencia] = useState("");
+  const [prioridad, setPrioridad] = useState("MEDIA");
+  const [titulo, setTitulo] = useState("");
+  const [descripcion, setDescripcion] = useState("");
+
+  const [imagen, setImagen] = useState(null);
+  const [previewImagen, setPreviewImagen] = useState(null);
+  const [cargando, setCargando] = useState(false);
+  const [busquedaIncidencia, setBusquedaIncidencia] = useState("");
+  const [filtroFechaDesde, setFiltroFechaDesde] = useState("");
+  const [filtroFechaHasta, setFiltroFechaHasta] = useState("");
+  const [filtroEstadoIncidencia, setFiltroEstadoIncidencia] = useState("TODOS");
+  const [filtroPrioridadIncidencia, setFiltroPrioridadIncidencia] =
+    useState("TODOS");
+  const [filtroSalaIncidencia, setFiltroSalaIncidencia] = useState("TODOS");
+  const [filtroEvidenciaIncidencia, setFiltroEvidenciaIncidencia] =
+    useState("TODOS");
+  const [filtroTicketInstitucional, setFiltroTicketInstitucional] =
+    useState("TODOS");
+  const [filtrosIncidenciasAbiertos, setFiltrosIncidenciasAbiertos] =
+    useState(true);
+  const [listaIncidenciasExpandida, setListaIncidenciasExpandida] =
+    useState(false);
+
+  const limiteIncidenciasContraidas = 8;
+
+  const usuarioSesion = useMemo(() => {
+    try {
+      return JSON.parse(localStorage.getItem("sgtsl_usuario")) || {};
+    } catch {
+      return {};
+    }
+  }, []);
+
+  const rolUsuario = usuarioSesion?.rol || "";
+  const mostrarRegistro = vista !== "listado";
+  const mostrarListado = vista !== "registro";
+  const rolesGestionIncidencia = [
+    "SUPER_ADMINISTRADOR",
+    "ADMINISTRADOR",
+    "TECNICO_SOPORTE",
+  ];
+
+  useEffect(() => {
+    cargarDatosIniciales();
+  }, []);
+
+  useEffect(() => {
+    setListaIncidenciasExpandida(false);
+  }, [
+    busquedaIncidencia,
+    filtroFechaDesde,
+    filtroFechaHasta,
+    filtroEstadoIncidencia,
+    filtroPrioridadIncidencia,
+    filtroSalaIncidencia,
+    filtroEvidenciaIncidencia,
+    filtroTicketInstitucional,
+  ]);
+
+  async function cargarDatosIniciales() {
+    try {
+      const catalogos = await obtenerCatalogos();
+      const respuestaIncidencias = await listarIncidencias();
+
+      setEdificios(catalogos.data.edificios || []);
+      setSalas(catalogos.data.salas || []);
+      setTiposIncidencia(catalogos.data.tiposIncidencia || []);
+      setEstadosIncidencia(catalogos.data.estadosIncidencia || []);
+      setIncidencias(respuestaIncidencias.data || []);
+
+      const codigoSalaQr = new URLSearchParams(window.location.search).get(
+        "sala",
+      );
+
+      if (codigoSalaQr) {
+        const salaQr = (catalogos.data.salas || []).find(
+          (sala) =>
+            String(sala.codigo).toUpperCase() ===
+              String(codigoSalaQr).toUpperCase() ||
+            String(sala.id_sala) === String(codigoSalaQr),
+        );
+
+        if (salaQr) {
+          setIdEdificio(String(salaQr.id_edificio));
+          setIdSala(String(salaQr.id_sala));
+
+          try {
+            const respuestaEquipos = await obtenerEquiposPorSala(
+              salaQr.id_sala,
+            );
+            setEquipos(respuestaEquipos.data || []);
+          } catch {
+            setEquipos([]);
+          }
+        }
+      }
+    } catch (error) {
+      Swal.fire({
+        icon: "error",
+        title: "Error al cargar incidencias",
+        text:
+          error.response?.data?.message ||
+          "No fue posible cargar la información inicial.",
+      });
+    }
+  }
+
+  const salasFiltradas = useMemo(() => {
+    if (!idEdificio) {
+      return [];
+    }
+
+    return salas.filter(
+      (sala) => Number(sala.id_edificio) === Number(idEdificio),
+    );
+  }, [salas, idEdificio]);
+
+  const equipoSeleccionado = useMemo(() => {
+    if (!idEquipo) {
+      return null;
+    }
+
+    return equipos.find(
+      (equipo) => Number(equipo.id_equipo) === Number(idEquipo),
+    );
+  }, [equipos, idEquipo]);
+
+  const incidenciasFiltradas = useMemo(() => {
+    const texto = busquedaIncidencia.trim().toLowerCase();
+
+    return incidencias.filter((incidencia) => {
+      const cumpleBusqueda =
+        !texto ||
+        [
+          incidencia.ticket,
+          incidencia.titulo,
+          incidencia.descripcion,
+          incidencia.codigo_sala,
+          incidencia.sala,
+          incidencia.nombre_equipo,
+          incidencia.tipo_equipo,
+          incidencia.tipo_incidencia,
+          incidencia.usuario_reporta,
+          incidencia.ticket_externo,
+        ]
+          .filter(Boolean)
+          .some((valor) => String(valor).toLowerCase().includes(texto));
+
+      const fechaReporte = incidencia.fecha_reporte
+        ? String(incidencia.fecha_reporte).slice(0, 10)
+        : "";
+
+      const cumpleFechaDesde =
+        !filtroFechaDesde ||
+        (fechaReporte && fechaReporte >= filtroFechaDesde);
+
+      const cumpleFechaHasta =
+        !filtroFechaHasta ||
+        (fechaReporte && fechaReporte <= filtroFechaHasta);
+
+      const cumpleEstado =
+        filtroEstadoIncidencia === "TODOS" ||
+        incidencia.estado_incidencia === filtroEstadoIncidencia;
+
+      const cumplePrioridad =
+        filtroPrioridadIncidencia === "TODOS" ||
+        incidencia.prioridad === filtroPrioridadIncidencia;
+
+      const cumpleSala =
+        filtroSalaIncidencia === "TODOS" ||
+        Number(incidencia.id_sala) === Number(filtroSalaIncidencia);
+
+      const tieneEvidencia = Boolean(incidencia.evidencia_ruta);
+      const cumpleEvidencia =
+        filtroEvidenciaIncidencia === "TODOS" ||
+        (filtroEvidenciaIncidencia === "CON_EVIDENCIA" && tieneEvidencia) ||
+        (filtroEvidenciaIncidencia === "SIN_EVIDENCIA" && !tieneEvidencia);
+
+      const tieneTicket = Boolean(incidencia.ticket_externo);
+      const cumpleTicket =
+        filtroTicketInstitucional === "TODOS" ||
+        (filtroTicketInstitucional === "CON_TICKET" && tieneTicket) ||
+        (filtroTicketInstitucional === "SIN_TICKET" && !tieneTicket);
+
+      return (
+        cumpleBusqueda &&
+        cumpleFechaDesde &&
+        cumpleFechaHasta &&
+        cumpleEstado &&
+        cumplePrioridad &&
+        cumpleSala &&
+        cumpleEvidencia &&
+        cumpleTicket
+      );
+    });
+  }, [
+    incidencias,
+    busquedaIncidencia,
+    filtroFechaDesde,
+    filtroFechaHasta,
+    filtroEstadoIncidencia,
+    filtroPrioridadIncidencia,
+    filtroSalaIncidencia,
+    filtroEvidenciaIncidencia,
+    filtroTicketInstitucional,
+  ]);
+
+  const incidenciasVisibles = useMemo(() => {
+    if (listaIncidenciasExpandida) {
+      return incidenciasFiltradas;
+    }
+
+    return incidenciasFiltradas.slice(0, limiteIncidenciasContraidas);
+  }, [incidenciasFiltradas, listaIncidenciasExpandida]);
+
+  function limpiarFiltrosIncidencias() {
+    setBusquedaIncidencia("");
+    setFiltroFechaDesde("");
+    setFiltroFechaHasta("");
+    setFiltroEstadoIncidencia("TODOS");
+    setFiltroPrioridadIncidencia("TODOS");
+    setFiltroSalaIncidencia("TODOS");
+    setFiltroEvidenciaIncidencia("TODOS");
+    setFiltroTicketInstitucional("TODOS");
+    setListaIncidenciasExpandida(false);
+  }
+
+  function manejarCambioEdificio(event) {
+    setIdEdificio(event.target.value);
+    setIdSala("");
+    setIdEquipo("");
+    setEquipos([]);
+  }
+
+  async function manejarCambioSala(event) {
+    const salaSeleccionada = event.target.value;
+
+    setIdSala(salaSeleccionada);
+    setIdEquipo("");
+    setEquipos([]);
+
+    if (!salaSeleccionada) {
+      return;
+    }
+
+    try {
+      const respuesta = await obtenerEquiposPorSala(salaSeleccionada);
+      setEquipos(respuesta.data || []);
+    } catch (error) {
+      Swal.fire({
+        icon: "error",
+        title: "Error al cargar equipos",
+        text:
+          error.response?.data?.message ||
+          "No fue posible cargar los equipos de la sala.",
+      });
+    }
+  }
+
+  function manejarImagen(event) {
+    const archivo = event.target.files[0];
+
+    if (!archivo) {
+      setImagen(null);
+      setPreviewImagen(null);
+      return;
+    }
+
+    const tiposPermitidos = [
+      "image/jpeg",
+      "image/jpg",
+      "image/png",
+      "image/webp",
+    ];
+    const maximoBytes = 5 * 1024 * 1024;
+
+    if (!tiposPermitidos.includes(archivo.type)) {
+      Swal.fire({
+        icon: "warning",
+        title: "Formato no permitido",
+        text: "Solo se permiten imágenes JPG, JPEG, PNG o WEBP.",
+      });
+
+      event.target.value = "";
+      return;
+    }
+
+    if (archivo.size > maximoBytes) {
+      Swal.fire({
+        icon: "warning",
+        title: "Archivo demasiado grande",
+        text: "La imagen no puede superar los 5 MB.",
+      });
+
+      event.target.value = "";
+      return;
+    }
+
+    setImagen(archivo);
+    setPreviewImagen(URL.createObjectURL(archivo));
+  }
+
+  function validarFormulario() {
+    if (!idEdificio) return "Debe seleccionar un edificio.";
+    if (!idSala) return "Debe seleccionar una sala.";
+    if (!idTipoIncidencia) return "Debe seleccionar el tipo de incidencia.";
+    if (!prioridad) return "Debe seleccionar la prioridad.";
+
+    if (!titulo.trim()) return "Debe ingresar un resumen del problema.";
+    if (titulo.trim().length < 5)
+      return "El resumen del problema debe tener al menos 5 caracteres.";
+    if (titulo.length > 150)
+      return "El resumen del problema no puede superar los 150 caracteres.";
+
+    if (!descripcion.trim())
+      return "Debe ingresar una descripción de la incidencia.";
+    if (descripcion.trim().length < 20)
+      return "La descripción debe tener al menos 20 caracteres.";
+    if (descripcion.length > 1500)
+      return "La descripción no puede superar los 1500 caracteres.";
+
+    return null;
+  }
+
+  function limpiarFormulario() {
+    setIdEdificio("");
+    setIdSala("");
+    setIdEquipo("");
+    setEquipos([]);
+    setIdTipoIncidencia("");
+    setPrioridad("MEDIA");
+    setTitulo("");
+    setDescripcion("");
+    setImagen(null);
+    setPreviewImagen(null);
+  }
+
+  function puedeEditarIncidencia(incidencia) {
+    if (["RESUELTA", "CERRADA", "RECHAZADA"].includes(incidencia.estado_incidencia)) {
+      return false;
+    }
+
+    if (rolesGestionIncidencia.includes(rolUsuario)) {
+      return true;
+    }
+
+    return (
+      ["DOCENTE", "ALUMNO_PRACTICA"].includes(rolUsuario) &&
+      Number(incidencia.id_usuario_reporta) === Number(usuarioSesion.id_usuario)
+    );
+  }
+
+  function puedeAgregarEvidencia(incidencia) {
+    return puedeEditarIncidencia(incidencia);
+  }
+
+  function puedeGestionarEstadoIncidencia() {
+    return rolesGestionIncidencia.includes(rolUsuario);
+  }
+
+  function puedeReabrirIncidencia(incidencia) {
+    return (
+      rolUsuario === "SUPER_ADMINISTRADOR" &&
+      ["CERRADA", "RECHAZADA"].includes(incidencia.estado_incidencia)
+    );
+  }
+
+  function obtenerEstadosPermitidosIncidencia(estadoActual) {
+    const flujoEstados = {
+      ABIERTA: ["EN_REVISION", "RECHAZADA"],
+      EN_REVISION: ["EN_PROCESO", "RECHAZADA"],
+      EN_PROCESO: ["RESUELTA"],
+      RESUELTA: ["CERRADA"],
+      CERRADA: [],
+      RECHAZADA: [],
+    };
+
+    return flujoEstados[estadoActual] || [];
+  }
+
+
+  function obtenerGuiaCambioEstadoIncidencia(estadoActual, estadosPermitidos) {
+    const flujoPrincipal = [
+      "ABIERTA",
+      "EN_REVISION",
+      "EN_PROCESO",
+      "RESUELTA",
+      "CERRADA",
+    ];
+    const indiceActual = flujoPrincipal.indexOf(estadoActual);
+    const pasos = flujoPrincipal
+      .map((estado, indice) => {
+        const esActual = estado === estadoActual;
+        const esPermitido = estadosPermitidos.includes(estado);
+        const esCumplido = indiceActual >= 0 && indice < indiceActual;
+        const color = esActual
+          ? "#0D2B63"
+          : esPermitido
+            ? "#198754"
+            : esCumplido
+              ? "#6C757D"
+              : "#ADB5BD";
+        const fondo = esActual
+          ? "#EAF1FF"
+          : esPermitido
+            ? "#E9F7EF"
+            : "#F8F9FA";
+
+        return `
+          <span style="
+            display:inline-flex;
+            align-items:center;
+            gap:4px;
+            border:1px solid ${color};
+            color:${color};
+            background:${fondo};
+            border-radius:999px;
+            padding:5px 9px;
+            font-size:12px;
+            font-weight:700;
+            margin:3px;
+          ">
+            ${esActual ? '<i class="bi bi-geo-alt-fill"></i>' : ''}
+            ${estado.replaceAll("_", " ")}
+          </span>
+        `;
+      })
+      .join("");
+
+    const notaRechazo = estadosPermitidos.includes("RECHAZADA")
+      ? `
+        <div style="margin-top:8px;color:#6c757d;font-size:13px">
+          Tambien puede rechazar la incidencia si el caso no corresponde o no cuenta con antecedentes suficientes.
+        </div>
+      `
+      : "";
+
+    const siguientes = estadosPermitidos.length
+      ? estadosPermitidos.map((estado) => estado.replaceAll("_", " ")).join(" o ")
+      : "Sin cambios disponibles";
+
+    return `
+      <div style="
+        border:1px solid #dee2e6;
+        border-radius:8px;
+        padding:10px;
+        background:#f8f9fa;
+        margin-bottom:12px;
+      ">
+        <div style="font-weight:700;margin-bottom:6px">Flujo de atencion</div>
+        <div>${pasos}</div>
+        <div style="margin-top:8px;color:#495057;font-size:13px">
+          Estado actual: <strong>${estadoActual.replaceAll("_", " ")}</strong>.<br />
+          Siguiente paso permitido: <strong>${siguientes}</strong>.
+        </div>
+        ${notaRechazo}
+      </div>
+    `;
+  }
+
+  function escaparHtml(valor) {
+    return String(valor ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;");
+  }
+
+  async function manejarRegistroIncidencia(event) {
+    event.preventDefault();
+
+    const errorValidacion = validarFormulario();
+
+    if (errorValidacion) {
+      Swal.fire({
+        icon: "warning",
+        title: "Validación requerida",
+        text: errorValidacion,
+      });
+      return;
+    }
+
+    const confirmacion = await Swal.fire({
+      title: "¿Registrar incidencia?",
+      text: "Se generará un ticket de atención para esta incidencia.",
+      icon: "question",
+      showCancelButton: true,
+      confirmButtonText: "Sí, registrar",
+      cancelButtonText: "Cancelar",
+      confirmButtonColor: "#0D2B63",
+      cancelButtonColor: "#6C757D",
+    });
+
+    if (!confirmacion.isConfirmed) {
+      return;
+    }
+
+    try {
+      setCargando(true);
+
+      const respuesta = await registrarIncidencia({
+        id_sala: Number(idSala),
+        id_equipo: idEquipo ? Number(idEquipo) : null,
+        id_tipo_incidencia: Number(idTipoIncidencia),
+        prioridad,
+        titulo: titulo.trim(),
+        descripcion: descripcion.trim(),
+      });
+
+      const idIncidencia = respuesta.data?.id_incidencia;
+      const ticket = respuesta.data?.ticket;
+
+      if (imagen && idIncidencia) {
+        await subirEvidenciaIncidencia(idIncidencia, imagen);
+      }
+
+      Swal.fire({
+        icon: "success",
+        title: "Incidencia registrada",
+        html: `
+          <p>La incidencia fue registrada correctamente.</p>
+          <strong>Ticket generado:</strong><br/>
+          <span style="font-size:18px">${ticket}</span>
+        `,
+        confirmButtonColor: "#0D2B63",
+      });
+
+      limpiarFormulario();
+      await cargarDatosIniciales();
+    } catch (error) {
+      Swal.fire({
+        icon: "error",
+        title: "Error al registrar incidencia",
+        html: `
+    <p>${error.response?.data?.message || "No fue posible registrar la incidencia."}</p>
+    <small>${error.response?.data?.error || ""}</small>
+  `,
+      });
+    } finally {
+      setCargando(false);
+    }
+  }
+
+  async function manejarEdicionIncidencia(incidencia) {
+    if (!puedeEditarIncidencia(incidencia)) {
+      Swal.fire({
+        icon: "info",
+        title: "Edicion no disponible",
+        text:
+          "Solo se pueden editar incidencias abiertas o en gestion, segun el rol del usuario.",
+        confirmButtonColor: "#0D2B63",
+      });
+      return;
+    }
+
+    let equiposSala = [];
+
+    try {
+      const respuestaEquipos = await obtenerEquiposPorSala(incidencia.id_sala);
+      equiposSala = respuestaEquipos.data || [];
+    } catch {
+      equiposSala = [];
+    }
+
+    const opcionesSalas = salas
+      .map(
+        (sala) => `
+          <option value="${sala.id_sala}" ${
+            Number(sala.id_sala) === Number(incidencia.id_sala)
+              ? "selected"
+              : ""
+          }>
+            ${sala.codigo} - ${sala.nombre}
+          </option>
+        `,
+      )
+      .join("");
+
+    const opcionesTipos = tiposIncidencia
+      .map(
+        (tipo) => `
+          <option value="${tipo.id_tipo_incidencia}" ${
+            Number(tipo.id_tipo_incidencia) ===
+            Number(incidencia.id_tipo_incidencia)
+              ? "selected"
+              : ""
+          }>
+            ${tipo.nombre}
+          </option>
+        `,
+      )
+      .join("");
+
+    const crearOpcionesEquipos = (listaEquipos) => `
+      <option value="">Sin equipo especifico</option>
+      ${listaEquipos
+        .map(
+          (equipo) => `
+            <option value="${equipo.id_equipo}" ${
+              Number(equipo.id_equipo) === Number(incidencia.id_equipo)
+                ? "selected"
+                : ""
+            }>
+              ${equipo.nombre_equipo} / ${equipo.tipo_equipo}${
+                equipo.ubicacion_en_sala
+                  ? ` - ${equipo.ubicacion_en_sala}`
+                  : ""
+              }
+            </option>
+          `,
+        )
+        .join("")}
+    `;
+
+    const resultado = await Swal.fire({
+      title: `Editar ${incidencia.ticket}`,
+      width: 900,
+      html: `
+        <div style="text-align:left">
+          <p style="margin-bottom:16px">
+            Actualice solo antecedentes necesarios. El cambio quedara registrado
+            en historial y auditoria del sistema.
+          </p>
+
+          <div class="row g-3">
+            <div class="col-md-6">
+              <label class="form-label fw-semibold">Sala</label>
+              <select id="editarIncidenciaSala" class="form-select">
+                ${opcionesSalas}
+              </select>
+            </div>
+
+            <div class="col-md-6">
+              <label class="form-label fw-semibold">Equipo</label>
+              <select id="editarIncidenciaEquipo" class="form-select">
+                ${crearOpcionesEquipos(equiposSala)}
+              </select>
+            </div>
+
+            <div class="col-md-6">
+              <label class="form-label fw-semibold">Tipo de incidencia</label>
+              <select id="editarIncidenciaTipo" class="form-select">
+                ${opcionesTipos}
+              </select>
+            </div>
+
+            <div class="col-md-6">
+              <label class="form-label fw-semibold">Prioridad</label>
+              <select id="editarIncidenciaPrioridad" class="form-select">
+                <option value="BAJA" ${
+                  incidencia.prioridad === "BAJA" ? "selected" : ""
+                }>BAJA</option>
+                <option value="MEDIA" ${
+                  incidencia.prioridad === "MEDIA" ? "selected" : ""
+                }>MEDIA</option>
+                <option value="ALTA" ${
+                  incidencia.prioridad === "ALTA" ? "selected" : ""
+                }>ALTA</option>
+                <option value="CRITICA" ${
+                  incidencia.prioridad === "CRITICA" ? "selected" : ""
+                }>CRITICA</option>
+              </select>
+            </div>
+
+            <div class="col-12">
+              <label class="form-label fw-semibold">Resumen del problema</label>
+              <input
+                id="editarIncidenciaTitulo"
+                class="form-control"
+                maxlength="150"
+                value="${escaparHtml(incidencia.titulo)}"
+              />
+              <small class="text-muted d-block mt-1">
+                Debe ingresar al menos 5 caracteres. Maximo 150.
+              </small>
+            </div>
+
+            <div class="col-12">
+              <label class="form-label fw-semibold">Descripcion</label>
+              <textarea
+                id="editarIncidenciaDescripcion"
+                class="form-control"
+                rows="4"
+                maxlength="1500"
+              >${escaparHtml(incidencia.descripcion)}</textarea>
+              <small class="text-muted d-block mt-1">
+                Debe ingresar al menos 20 caracteres. Maximo 1500.
+              </small>
+            </div>
+
+            <div class="col-12">
+              <div
+                id="editarIncidenciaError"
+                class="alert alert-warning py-2 px-3 mb-0 d-none"
+                style="font-size:14px"
+              ></div>
+            </div>
+          </div>
+        </div>
+      `,
+      icon: "question",
+      showCancelButton: true,
+      confirmButtonText: "Guardar cambios",
+      cancelButtonText: "Cancelar",
+      confirmButtonColor: "#0D2B63",
+      cancelButtonColor: "#6C757D",
+      didOpen: () => {
+        const selectSala = document.getElementById("editarIncidenciaSala");
+        const selectEquipo = document.getElementById("editarIncidenciaEquipo");
+
+        selectSala.addEventListener("change", async () => {
+          selectEquipo.innerHTML = `<option value="">Cargando equipos...</option>`;
+
+          try {
+            const respuesta = await obtenerEquiposPorSala(selectSala.value);
+            selectEquipo.innerHTML = crearOpcionesEquipos(respuesta.data || []);
+          } catch {
+            selectEquipo.innerHTML = `<option value="">Sin equipo especifico</option>`;
+          }
+        });
+      },
+      preConfirm: () => {
+        const error = document.getElementById("editarIncidenciaError");
+        const idSalaEditada = document.getElementById(
+          "editarIncidenciaSala",
+        ).value;
+        const idEquipoEditado = document.getElementById(
+          "editarIncidenciaEquipo",
+        ).value;
+        const idTipoEditado = document.getElementById(
+          "editarIncidenciaTipo",
+        ).value;
+        const prioridadEditada = document.getElementById(
+          "editarIncidenciaPrioridad",
+        ).value;
+        const tituloEditado = document
+          .getElementById("editarIncidenciaTitulo")
+          .value.trim();
+        const descripcionEditada = document
+          .getElementById("editarIncidenciaDescripcion")
+          .value.trim();
+
+        error.classList.add("d-none");
+        error.textContent = "";
+
+        if (!idSalaEditada) {
+          error.textContent = "Debe seleccionar una sala.";
+          error.classList.remove("d-none");
+          return false;
+        }
+
+        if (!idTipoEditado) {
+          error.textContent = "Debe seleccionar el tipo de incidencia.";
+          error.classList.remove("d-none");
+          return false;
+        }
+
+        if (tituloEditado.length < 5) {
+          error.textContent = "El resumen del problema debe tener al menos 5 caracteres.";
+          error.classList.remove("d-none");
+          return false;
+        }
+
+        if (descripcionEditada.length < 20) {
+          error.textContent =
+            "La descripcion debe tener al menos 20 caracteres.";
+          error.classList.remove("d-none");
+          return false;
+        }
+
+        return {
+          id_sala: Number(idSalaEditada),
+          id_equipo: idEquipoEditado ? Number(idEquipoEditado) : null,
+          id_tipo_incidencia: Number(idTipoEditado),
+          prioridad: prioridadEditada,
+          titulo: tituloEditado,
+          descripcion: descripcionEditada,
+        };
+      },
+    });
+
+    if (!resultado.isConfirmed) return;
+
+    try {
+      await editarIncidencia(incidencia.id_incidencia, resultado.value);
+
+      Swal.fire({
+        icon: "success",
+        title: "Incidencia actualizada",
+        text: "Los datos generales de la incidencia fueron actualizados correctamente.",
+        confirmButtonColor: "#0D2B63",
+      });
+
+      await cargarDatosIniciales();
+    } catch (error) {
+      Swal.fire({
+        icon: "error",
+        title: "Error al editar incidencia",
+        text:
+          error.response?.data?.message ||
+          "No fue posible editar la incidencia.",
+        confirmButtonColor: "#0D2B63",
+      });
+    }
+  }
+
+  async function manejarEvidenciaAdicional(incidencia) {
+    if (!puedeAgregarEvidencia(incidencia)) {
+      Swal.fire({
+        icon: "info",
+        title: "Evidencia no disponible",
+        text:
+          "Solo se puede agregar evidencia mientras la incidencia se encuentre abierta o en gestion.",
+        confirmButtonColor: "#0D2B63",
+      });
+      return;
+    }
+
+    const resultado = await Swal.fire({
+      title: `Agregar evidencia ${incidencia.ticket}`,
+      width: 720,
+      html: `
+        <div style="text-align:left">
+          <p style="margin-bottom:16px">
+            La nueva imagen quedara asociada al ticket como respaldo adicional.
+            Las evidencias anteriores se conservan para mantener trazabilidad.
+          </p>
+
+          <input
+            id="incidenciaEvidenciaNueva"
+            type="file"
+            class="form-control"
+            accept="image/jpeg,image/jpg,image/png,image/webp"
+          />
+
+          <small class="text-muted d-block mt-2">
+            Formatos permitidos: JPG, JPEG, PNG o WEBP. Tamano maximo: 5 MB.
+          </small>
+
+          <div
+            id="incidenciaEvidenciaError"
+            class="alert alert-warning py-2 px-3 mt-3 mb-0 d-none"
+            style="font-size:14px"
+          ></div>
+        </div>
+      `,
+      icon: "question",
+      showCancelButton: true,
+      confirmButtonText: "Agregar evidencia",
+      cancelButtonText: "Cancelar",
+      confirmButtonColor: "#0D2B63",
+      cancelButtonColor: "#6C757D",
+      preConfirm: () => {
+        const error = document.getElementById("incidenciaEvidenciaError");
+        const archivo = document.getElementById("incidenciaEvidenciaNueva")
+          .files[0];
+        const tiposPermitidos = [
+          "image/jpeg",
+          "image/jpg",
+          "image/png",
+          "image/webp",
+        ];
+
+        error.classList.add("d-none");
+        error.textContent = "";
+
+        if (!archivo) {
+          error.textContent = "Debe seleccionar una imagen.";
+          error.classList.remove("d-none");
+          return false;
+        }
+
+        if (!tiposPermitidos.includes(archivo.type)) {
+          error.textContent = "Solo se permiten imagenes JPG, JPEG, PNG o WEBP.";
+          error.classList.remove("d-none");
+          return false;
+        }
+
+        if (archivo.size > 5 * 1024 * 1024) {
+          error.textContent = "La imagen no puede superar los 5 MB.";
+          error.classList.remove("d-none");
+          return false;
+        }
+
+        return archivo;
+      },
+    });
+
+    if (!resultado.isConfirmed) return;
+
+    try {
+      await subirEvidenciaIncidencia(incidencia.id_incidencia, resultado.value);
+
+      Swal.fire({
+        icon: "success",
+        title: "Evidencia agregada",
+        text: "La evidencia fue asociada correctamente a la incidencia.",
+        confirmButtonColor: "#0D2B63",
+      });
+
+      await cargarDatosIniciales();
+    } catch (error) {
+      Swal.fire({
+        icon: "error",
+        title: "Error al agregar evidencia",
+        text:
+          error.response?.data?.message ||
+          "No fue posible agregar la evidencia.",
+        confirmButtonColor: "#0D2B63",
+      });
+    }
+  }
+
+  async function manejarCambioEstado(incidencia) {
+    const nombresEstadosDisponibles = estadosIncidencia.map(
+      (estado) => estado.nombre,
+    );
+    const estadosPermitidos = obtenerEstadosPermitidosIncidencia(
+      incidencia.estado_incidencia,
+    ).filter((estado) => nombresEstadosDisponibles.includes(estado));
+
+    if (estadosPermitidos.length === 0) {
+      Swal.fire({
+        icon: "info",
+        title: "Incidencia sin cambios disponibles",
+        text:
+          "La incidencia no admite nuevos cambios de estado según el flujo configurado.",
+        confirmButtonColor: "#0D2B63",
+      });
+      return;
+    }
+
+    const opcionesEstados = estadosIncidencia
+      .filter((estado) => estadosPermitidos.includes(estado.nombre))
+      .map(
+        (estado) => `
+          <option value="${estado.id_estado_incidencia}">
+            ${estado.nombre}
+          </option>
+        `,
+      )
+      .join("");
+
+    const ticketExistente = incidencia.ticket_externo || "";
+    const requiereTicketExistente = Boolean(incidencia.ticket_externo);
+
+    const resultado = await Swal.fire({
+      title: `Actualizar ${incidencia.ticket}`,
+      html: `
+        <div style="text-align:left">
+          ${obtenerGuiaCambioEstadoIncidencia(incidencia.estado_incidencia, estadosPermitidos)}
+          <label style="font-weight:bold">Nuevo estado</label>
+          <select id="estadoIncidencia" class="swal2-input">
+            ${opcionesEstados}
+          </select>
+
+          <div style="margin-top:12px">
+            <label style="display:flex; gap:8px; align-items:center">
+              <input 
+                type="checkbox" 
+                id="requiereTicketExterno"
+                ${requiereTicketExistente ? "checked" : ""}
+              />
+              Asociar ticket institucional
+            </label>
+          </div>
+
+          <input
+            id="ticketExterno"
+            class="swal2-input"
+            maxlength="100"
+            value="${ticketExistente}"
+            placeholder="Ej: MESA-AYUDA-2026-00125"
+            style="display:${requiereTicketExistente ? "block" : "none"}"
+          />
+
+          <label style="font-weight:bold; margin-top:12px">Observación</label>
+          <textarea
+            id="observacionCierre"
+            class="swal2-textarea"
+            maxlength="1000"
+            placeholder="Ingrese observación si corresponde"
+          >${incidencia.observacion_cierre || ""}</textarea>
+
+          <small>
+            Para RESUELTA o CERRADA, la observación es obligatoria.
+          </small>
+        </div>
+      `,
+      showCancelButton: true,
+      confirmButtonText: "Actualizar estado",
+      cancelButtonText: "Cancelar",
+      confirmButtonColor: "#0D2B63",
+      cancelButtonColor: "#6C757D",
+
+      didOpen: () => {
+        const check = document.getElementById("requiereTicketExterno");
+        const inputTicket = document.getElementById("ticketExterno");
+
+        check.addEventListener("change", () => {
+          inputTicket.style.display = check.checked ? "block" : "none";
+
+          if (!check.checked) {
+            inputTicket.value = "";
+          }
+        });
+      },
+
+      preConfirm: () => {
+        const idEstado = document.getElementById("estadoIncidencia").value;
+        const observacion = document.getElementById("observacionCierre").value;
+        const requiereTicket = document.getElementById(
+          "requiereTicketExterno",
+        ).checked;
+        const ticketExterno = document.getElementById("ticketExterno").value;
+
+        if (requiereTicket && ticketExterno.trim().length < 3) {
+          Swal.showValidationMessage(
+            "Debe ingresar el número de ticket institucional.",
+          );
+          return false;
+        }
+
+        return {
+          id_estado_incidencia: Number(idEstado),
+          observacion_cierre: observacion,
+          requiere_ticket_externo: requiereTicket,
+          ticket_externo: ticketExterno.trim(),
+        };
+      },
+    });
+
+    if (!resultado.isConfirmed) {
+      return;
+    }
+
+    try {
+      await cambiarEstadoIncidencia(incidencia.id_incidencia, resultado.value);
+
+      Swal.fire({
+        icon: "success",
+        title: "Estado actualizado",
+        text: "La incidencia fue actualizada correctamente.",
+        confirmButtonColor: "#0D2B63",
+      });
+
+      await cargarDatosIniciales();
+    } catch (error) {
+      const detalleError =
+        error.response?.data?.error ||
+        error.response?.data?.message ||
+        "No fue posible actualizar la incidencia.";
+
+      Swal.fire({
+        icon: "error",
+        title: "Error al actualizar estado",
+        text: detalleError,
+        confirmButtonColor: "#0D2B63",
+      });
+    }
+  }
+
+  async function manejarReaperturaIncidencia(incidencia) {
+    const resultado = await Swal.fire({
+      icon: "question",
+      title: `Reabrir ${incidencia.ticket}`,
+      html: `
+        <div style="text-align:left">
+          <p>
+            Esta accion dejara la incidencia nuevamente en revision para permitir
+            su analisis y gestion tecnica. Debe utilizarse solo cuando exista un
+            antecedente formal que justifique reabrir el caso.
+          </p>
+          <label style="font-weight:bold">Motivo de reapertura</label>
+          <textarea id="motivoReapertura" class="swal2-textarea" maxlength="500" placeholder="Ingrese el motivo de reapertura"></textarea>
+          <small>Debe ingresar al menos 5 caracteres. Maximo 500.</small>
+        </div>
+      `,
+      showCancelButton: true,
+      confirmButtonText: "Reabrir incidencia",
+      cancelButtonText: "Cancelar",
+      confirmButtonColor: "#0D2B63",
+      cancelButtonColor: "#6C757D",
+      preConfirm: () => {
+        const motivo = document.getElementById("motivoReapertura").value.trim();
+
+        if (motivo.length < 5) {
+          Swal.showValidationMessage("Debe ingresar un motivo de reapertura de al menos 5 caracteres.");
+          return false;
+        }
+
+        return { motivo };
+      },
+    });
+
+    if (!resultado.isConfirmed) {
+      return;
+    }
+
+    try {
+      await reabrirIncidencia(incidencia.id_incidencia, resultado.value);
+
+      Swal.fire({
+        icon: "success",
+        title: "Incidencia reabierta",
+        text: "La incidencia quedo nuevamente en revision.",
+        confirmButtonColor: "#0D2B63",
+      });
+
+      await cargarDatosIniciales();
+    } catch (error) {
+      Swal.fire({
+        icon: "error",
+        title: "Error al reabrir incidencia",
+        text: error.response?.data?.message || "No fue posible reabrir la incidencia.",
+      });
+    }
+  }
+
+  function verDetalleIncidencia(incidencia) {
+    Swal.fire({
+      title: incidencia.ticket,
+      html: `
+        <div style="text-align:left">
+          <p><strong>Resumen del problema:</strong> ${incidencia.titulo}</p>
+          <p><strong>Descripción:</strong> ${incidencia.descripcion}</p>
+          <p><strong>Sala:</strong> ${incidencia.codigo_sala} - ${
+            incidencia.sala
+          }</p>
+          <p><strong>Equipo:</strong> ${
+            incidencia.nombre_equipo || "Sin equipo especifico"
+          }</p>
+          <p><strong>Tipo:</strong> ${incidencia.tipo_incidencia}</p>
+          <p><strong>Estado:</strong> ${incidencia.estado_incidencia}</p>
+          <p><strong>Prioridad:</strong> ${incidencia.prioridad}</p>
+
+          <hr />
+
+          <p>
+            <strong>Ticket institucional:</strong>
+            ${incidencia.ticket_externo || "No asociado"}
+          </p>
+
+          <p>
+            <strong>Observación de gestión/cierre:</strong><br />
+            ${incidencia.observacion_cierre || "Sin observación registrada"}
+          </p>
+
+          <p>
+            <strong>Reportado por:</strong> ${incidencia.usuario_reporta}
+          </p>
+        </div>
+      `,
+      confirmButtonColor: "#0D2B63",
+    });
+  }
+
+  async function verEvidencia(incidencia) {
+    try {
+      const respuesta = await listarEvidenciasIncidencia(
+        incidencia.id_incidencia,
+      );
+      const evidencias = respuesta.data || [];
+
+      if (evidencias.length === 0) {
+        Swal.fire({
+          icon: "info",
+          title: `Evidencias ${incidencia.ticket}`,
+          text: "La incidencia no tiene evidencias fotograficas registradas.",
+          confirmButtonColor: "#0D2B63",
+        });
+        return;
+      }
+
+      const tarjetas = evidencias
+        .map((evidencia, index) => {
+          const url = obtenerUrlEvidenciaPorRuta(
+            evidencia.ruta_archivo,
+            `${evidencia.id_evidencia}-${evidencia.fecha_subida || index}`,
+          );
+          const etiqueta = evidencia.vigente
+            ? `<span class="badge bg-success"><i class="bi bi-check-circle me-1"></i>Vigente</span>`
+            : `<span class="badge bg-secondary">Historial</span>`;
+
+          return `
+            <article style="
+              border:1px solid #dee2e6;
+              border-radius:8px;
+              padding:10px;
+              background:#fff;
+            ">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px;">
+                <strong>Evidencia ${evidencias.length - index}</strong>
+                ${etiqueta}
+              </div>
+              <a href="${url}" target="_blank" rel="noreferrer">
+                <img
+                  src="${url}"
+                  alt="Evidencia fotografica de incidencia"
+                  style="
+                    width:100%;
+                    max-height:260px;
+                    object-fit:contain;
+                    border-radius:8px;
+                    border:1px solid #eef1f4;
+                    background:#f8f9fa;
+                  "
+                />
+              </a>
+              <div style="margin-top:8px;font-size:13px;color:#495057;line-height:1.35;text-align:left;">
+                <div><strong>Fecha:</strong> ${evidencia.fecha_subida || "No registrada"}</div>
+                <div><strong>Subida por:</strong> ${evidencia.usuario_subida || "No registrado"}</div>
+                <div><strong>Archivo:</strong> ${evidencia.nombre_archivo || "Sin nombre"}</div>
+              </div>
+            </article>
+          `;
+        })
+        .join("");
+
+      Swal.fire({
+        title: `Evidencias ${incidencia.ticket}`,
+        html: `
+          <div style="text-align:left">
+            <p style="margin-bottom:12px;color:#495057">
+              Se muestra el historial completo de fotografias asociadas al ticket.
+              La evidencia marcada como vigente corresponde a la ultima imagen cargada.
+            </p>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;max-height:620px;overflow:auto;padding-right:4px;">
+              ${tarjetas}
+            </div>
+          </div>
+        `,
+        width: 980,
+        confirmButtonText: "Cerrar",
+        confirmButtonColor: "#0D2B63",
+      });
+    } catch (error) {
+      Swal.fire({
+        icon: "error",
+        title: "Error al cargar evidencias",
+        text:
+          error.response?.data?.message ||
+          "No fue posible obtener el historial de evidencias.",
+      });
+    }
+  }
+
+  function obtenerClasePrioridad(valor) {
+    if (valor === "CRITICA") return "bg-dark";
+    if (valor === "ALTA") return "bg-danger";
+    if (valor === "MEDIA") return "bg-warning text-dark";
+    return "bg-success";
+  }
+
+  function obtenerClaseEstado(valor) {
+    if (valor === "ABIERTA") return "bg-danger";
+    if (valor === "EN_REVISION") return "bg-warning text-dark";
+    if (valor === "EN_PROCESO") return "bg-info text-dark";
+    if (valor === "RESUELTA") return "bg-success";
+    if (valor === "CERRADA") return "bg-secondary";
+    return "bg-primary";
+  }
+
+  /*
+==============================================================================
+FUNCIÓN: verHistorialIncidencia
+------------------------------------------------------------------------------
+Muestra el historial funcional de una incidencia.
+
+Permite visualizar:
+- Registro inicial.
+- Cambios de estado.
+- Ticket institucional asociado.
+- Observaciones registradas.
+- Usuario responsable.
+- Fecha de cada movimiento.
+==============================================================================
+*/
+  function obtenerPresentacionHistorialIncidencia(accion) {
+    const presentaciones = {
+      REGISTRO: {
+        etiqueta: "Registro inicial",
+        color: "#0D2B63",
+        icono: "bi-flag",
+      },
+      CAMBIO_ESTADO: {
+        etiqueta: "Cambio de estado",
+        color: "#198754",
+        icono: "bi-arrow-repeat",
+      },
+      EVIDENCIA: {
+        etiqueta: "Evidencia fotografica",
+        color: "#0dcaf0",
+        icono: "bi-image",
+      },
+      REAPERTURA: {
+        etiqueta: "Reapertura autorizada",
+        color: "#dc3545",
+        icono: "bi-arrow-counterclockwise",
+      },
+      EDICION: {
+        etiqueta: "Actualizacion de datos",
+        color: "#ffc107",
+        icono: "bi-pencil-square",
+      },
+    };
+
+    return (
+      presentaciones[accion] || {
+        etiqueta: accion || "Movimiento registrado",
+        color: "#6c757d",
+        icono: "bi-clock-history",
+      }
+    );
+  }
+
+  async function verHistorialIncidencia(incidencia) {
+    try {
+      const respuesta = await obtenerHistorialIncidencia(
+        incidencia.id_incidencia,
+      );
+
+      const historial = respuesta.data || [];
+
+      const contenidoHistorial =
+        historial.length > 0
+          ? historial
+              .map((item) => {
+                const presentacion = obtenerPresentacionHistorialIncidencia(
+                  item.accion,
+                );
+
+                return `
+                <div style="
+                  border-left:4px solid ${presentacion.color};
+                  padding:12px 14px;
+                  margin-bottom:12px;
+                  background:#f8f9fa;
+                  border-radius:8px;
+                ">
+                  <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px;">
+                    <span style="
+                      background:${presentacion.color};
+                      color:#fff;
+                      border-radius:6px;
+                      padding:4px 8px;
+                      font-size:12px;
+                      font-weight:700;
+                    ">
+                      <i class="bi ${presentacion.icono}" style="margin-right:4px"></i>
+                      ${presentacion.etiqueta}
+                    </span>
+                    <small style="color:#6c757d">
+                      ${new Date(item.fecha_registro).toLocaleString("es-CL")}
+                    </small>
+                  </div>
+
+                  <p style="margin:6px 0;color:#343a40">
+                    ${item.descripcion || "Movimiento registrado en la incidencia."}
+                  </p>
+
+                  <small style="color:#6c757d">
+                    Responsable: ${item.usuario || "No registrado"}
+                  </small>
+                </div>
+              `;
+              })
+              .join("")
+          : `
+            <p style="color:#6c757d">
+              Esta incidencia no tiene historial registrado.
+            </p>
+          `;
+
+      Swal.fire({
+        title: `Historial ${incidencia.ticket}`,
+        width: 850,
+        html: `
+        <div style="text-align:left">
+          <p style="color:#6c757d;margin-bottom:14px">
+            Trazabilidad de acciones registradas sobre la incidencia.
+          </p>
+          ${contenidoHistorial}
+        </div>
+      `,
+        confirmButtonText: "Cerrar",
+        confirmButtonColor: "#0D2B63",
+      });
+    } catch (error) {
+      Swal.fire({
+        icon: "error",
+        title: "Error al consultar historial",
+        text:
+          error.response?.data?.message ||
+          "No fue posible cargar el historial de la incidencia.",
+      });
+    }
+  }
+
+  return (
+    <MainLayout>
+      <div className="mb-4 d-flex flex-column flex-lg-row align-items-lg-start justify-content-between gap-3">
+        <div>
+          <h2 className="fw-bold mb-1">Gestión de incidencias</h2>
+          <p className="text-muted mb-0">
+            Registro, seguimiento y actualización de incidencias técnicas.
+          </p>
+        </div>
+        <button
+          type="button"
+          className="btn btn-outline-primary"
+          onClick={() =>
+            Swal.fire({
+              icon: "info",
+              title: "Proceso de atención de incidencias",
+              html: obtenerGuiaCambioEstadoIncidencia("ABIERTA", ["EN_REVISION"]),
+              confirmButtonText: "Entendido",
+              confirmButtonColor: "#0D2B63",
+            })
+          }
+        >
+          <i className="bi bi-diagram-3 me-2"></i>
+          Ver proceso
+        </button>
+      </div>
+
+      {mostrarRegistro && (
+      <form id="registro" onSubmit={manejarRegistroIncidencia}>
+        <div className="card sgtsl-card mb-4">
+          <div className="card-header bg-white fw-bold">
+            Registro de nueva incidencia
+          </div>
+
+          <div className="card-body">
+            <div className="row g-3">
+              <div className="col-md-4">
+                <label className="form-label fw-semibold">
+                  Edificio <span className="sgtsl-required">*</span>
+                </label>
+
+                <select
+                  className="form-select"
+                  value={idEdificio}
+                  onChange={manejarCambioEdificio}
+                >
+                  <option value="">Seleccione edificio</option>
+                  {edificios.map((edificio) => (
+                    <option
+                      key={edificio.id_edificio}
+                      value={edificio.id_edificio}
+                    >
+                      {edificio.nombre}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="col-md-4">
+                <label className="form-label fw-semibold">
+                  Sala <span className="sgtsl-required">*</span>
+                </label>
+
+                <select
+                  className="form-select"
+                  value={idSala}
+                  onChange={manejarCambioSala}
+                  disabled={!idEdificio}
+                >
+                  <option value="">Seleccione sala</option>
+                  {salasFiltradas.map((sala) => (
+                    <option key={sala.id_sala} value={sala.id_sala}>
+                      {sala.codigo} - {sala.nombre}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="col-md-4">
+                <label className="form-label fw-semibold">Equipo</label>
+
+                <select
+                  className="form-select"
+                  value={idEquipo}
+                  onChange={(e) => setIdEquipo(e.target.value)}
+                  disabled={!idSala}
+                >
+                  <option value="">Sin equipo especifico</option>
+                  {equipos.map((equipo) => (
+                    <option key={equipo.id_equipo} value={equipo.id_equipo}>
+                      {equipo.nombre_equipo} / {equipo.tipo_equipo}
+                      {equipo.ubicacion_en_sala
+                        ? ` - ${equipo.ubicacion_en_sala}`
+                        : ""}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {equipoSeleccionado && (
+                <div className="col-12">
+                  <div className="alert alert-info mb-0">
+                    <strong>Equipo seleccionado:</strong>{" "}
+                    {equipoSeleccionado.nombre_equipo}
+                    <br />
+                    <strong>Tipo:</strong> {equipoSeleccionado.tipo_equipo}
+                    <br />
+                    <strong>Ubicación:</strong>{" "}
+                    {equipoSeleccionado.ubicacion_en_sala ||
+                      "Sin ubicación registrada"}
+                  </div>
+                </div>
+              )}
+
+              <div className="col-md-4">
+                <label className="form-label fw-semibold">
+                  Tipo de incidencia <span className="sgtsl-required">*</span>
+                </label>
+
+                <select
+                  className="form-select"
+                  value={idTipoIncidencia}
+                  onChange={(e) => setIdTipoIncidencia(e.target.value)}
+                >
+                  <option value="">Seleccione tipo</option>
+                  {tiposIncidencia.map((tipo) => (
+                    <option
+                      key={tipo.id_tipo_incidencia}
+                      value={tipo.id_tipo_incidencia}
+                    >
+                      {tipo.nombre}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="col-md-4">
+                <label className="form-label fw-semibold">
+                  Prioridad <span className="sgtsl-required">*</span>
+                </label>
+
+                <select
+                  className="form-select"
+                  value={prioridad}
+                  onChange={(e) => setPrioridad(e.target.value)}
+                >
+                  <option value="BAJA">BAJA</option>
+                  <option value="MEDIA">MEDIA</option>
+                  <option value="ALTA">ALTA</option>
+                  <option value="CRITICA">CRÍTICA</option>
+                </select>
+              </div>
+
+              <div className="col-md-4">
+                <label className="form-label fw-semibold">
+                  Resumen del problema <span className="sgtsl-required">*</span>
+                </label>
+
+                <input
+                  type="text"
+                  className="form-control"
+                  maxLength="150"
+                  value={titulo}
+                  onChange={(e) => setTitulo(e.target.value)}
+                  placeholder="Ej: Proyector sin imagen en sala"
+                />
+
+                <div className="sgtsl-counter text-end mt-1">
+                  {titulo.length} / 150 caracteres
+                </div>
+              </div>
+
+              <div className="col-12">
+                <label className="form-label fw-semibold">
+                  Descripción <span className="sgtsl-required">*</span>
+                </label>
+
+                <textarea
+                  className="form-control"
+                  rows="4"
+                  maxLength="1500"
+                  value={descripcion}
+                  onChange={(e) => setDescripcion(e.target.value)}
+                  placeholder="Describa claramente el problema técnico detectado."
+                ></textarea>
+
+                <div className="sgtsl-counter text-end mt-1">
+                  {descripcion.length} / 1500 caracteres
+                </div>
+              </div>
+
+              <div className="col-md-6">
+                <label className="form-label fw-semibold">
+                  Evidencia fotográfica
+                </label>
+
+                <input
+                  type="file"
+                  className="form-control"
+                  accept="image/jpeg,image/jpg,image/png,image/webp"
+                  onChange={manejarImagen}
+                />
+
+                <small className="text-muted d-block mt-2">
+                  Formatos permitidos: JPG, JPEG, PNG o WEBP. Tamaño máximo: 5
+                  MB.
+                </small>
+              </div>
+
+              {previewImagen && (
+                <div className="col-md-6">
+                  <p className="fw-semibold mb-2">Vista previa:</p>
+
+                  <img
+                    src={previewImagen}
+                    alt="Vista previa de evidencia"
+                    style={{
+                      width: "160px",
+                      height: "110px",
+                      objectFit: "cover",
+                      borderRadius: "8px",
+                      border: "1px solid #dee2e6",
+                    }}
+                  />
+                </div>
+              )}
+
+              <div className="col-12 text-end">
+                <button
+                  type="submit"
+                  className="btn btn-danger"
+                  disabled={cargando}
+                >
+                  <i className="bi bi-exclamation-triangle me-2"></i>
+                  {cargando ? "Registrando incidencia" : "Registrar incidencia"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </form>
+      )}
+
+      {mostrarListado && (
+      <>
+      <div className="card sgtsl-card mb-4">
+        <div className="card-header bg-white d-flex justify-content-between align-items-center">
+          <div>
+            <strong>Filtros de incidencias</strong>
+            <small className="text-muted ms-2">
+              {incidenciasFiltradas.length} de {incidencias.length} registros
+            </small>
+          </div>
+
+          <button
+            type="button"
+            className="btn btn-sm btn-outline-secondary"
+            onClick={() =>
+              setFiltrosIncidenciasAbiertos((estadoActual) => !estadoActual)
+            }
+          >
+            <i
+              className={`bi ${
+                filtrosIncidenciasAbiertos
+                  ? "bi-chevron-up"
+                  : "bi-chevron-down"
+              } me-1`}
+            ></i>
+            {filtrosIncidenciasAbiertos ? "Contraer" : "Expandir"}
+          </button>
+        </div>
+
+        {filtrosIncidenciasAbiertos && (
+          <div className="card-body">
+            <div className="row g-3">
+              <div className="col-md-4">
+                <label className="form-label fw-semibold">Busqueda</label>
+                <input
+                  type="text"
+                  className="form-control"
+                  value={busquedaIncidencia}
+                  onChange={(e) => setBusquedaIncidencia(e.target.value)}
+                  placeholder="Ticket, sala, equipo, tipo o reportante"
+                />
+              </div>
+
+              <div className="col-md-2">
+                <label className="form-label fw-semibold">Desde</label>
+                <input
+                  type="date"
+                  className="form-control"
+                  value={filtroFechaDesde}
+                  onChange={(e) => setFiltroFechaDesde(e.target.value)}
+                />
+              </div>
+
+              <div className="col-md-2">
+                <label className="form-label fw-semibold">Hasta</label>
+                <input
+                  type="date"
+                  className="form-control"
+                  value={filtroFechaHasta}
+                  onChange={(e) => setFiltroFechaHasta(e.target.value)}
+                />
+              </div>
+
+              <div className="col-md-2">
+                <label className="form-label fw-semibold">Estado</label>
+                <select
+                  className="form-select"
+                  value={filtroEstadoIncidencia}
+                  onChange={(e) => setFiltroEstadoIncidencia(e.target.value)}
+                >
+                  <option value="TODOS">Todos</option>
+                  {estadosIncidencia.map((estado) => (
+                    <option
+                      key={estado.id_estado_incidencia}
+                      value={estado.nombre}
+                    >
+                      {estado.nombre}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="col-md-2">
+                <label className="form-label fw-semibold">Prioridad</label>
+                <select
+                  className="form-select"
+                  value={filtroPrioridadIncidencia}
+                  onChange={(e) =>
+                    setFiltroPrioridadIncidencia(e.target.value)
+                  }
+                >
+                  <option value="TODOS">Todas</option>
+                  <option value="BAJA">BAJA</option>
+                  <option value="MEDIA">MEDIA</option>
+                  <option value="ALTA">ALTA</option>
+                  <option value="CRITICA">CRITICA</option>
+                </select>
+              </div>
+
+              <div className="col-md-3">
+                <label className="form-label fw-semibold">Sala</label>
+                <select
+                  className="form-select"
+                  value={filtroSalaIncidencia}
+                  onChange={(e) => setFiltroSalaIncidencia(e.target.value)}
+                >
+                  <option value="TODOS">Todas</option>
+                  {salas.map((sala) => (
+                    <option key={sala.id_sala} value={sala.id_sala}>
+                      {sala.codigo} - {sala.nombre}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="col-md-3">
+                <label className="form-label fw-semibold">Evidencia</label>
+                <select
+                  className="form-select"
+                  value={filtroEvidenciaIncidencia}
+                  onChange={(e) =>
+                    setFiltroEvidenciaIncidencia(e.target.value)
+                  }
+                >
+                  <option value="TODOS">Todas</option>
+                  <option value="CON_EVIDENCIA">Con evidencia</option>
+                  <option value="SIN_EVIDENCIA">Sin evidencia</option>
+                </select>
+              </div>
+
+              <div className="col-md-3">
+                <label className="form-label fw-semibold">
+                  Ticket institucional
+                </label>
+                <select
+                  className="form-select"
+                  value={filtroTicketInstitucional}
+                  onChange={(e) =>
+                    setFiltroTicketInstitucional(e.target.value)
+                  }
+                >
+                  <option value="TODOS">Todos</option>
+                  <option value="CON_TICKET">Con ticket</option>
+                  <option value="SIN_TICKET">Sin ticket</option>
+                </select>
+              </div>
+
+              <div className="col-md-3 d-flex align-items-end justify-content-md-end">
+                <button
+                  type="button"
+                  className="btn btn-outline-secondary w-100"
+                  onClick={limpiarFiltrosIncidencias}
+                >
+                  <i className="bi bi-x-circle me-2"></i>
+                  Limpiar filtros
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div id="listado" className="card sgtsl-card">
+        <div className="card-header bg-white d-flex justify-content-between align-items-center">
+          <div>
+            <strong>Incidencias registradas</strong>
+            <small className="text-muted ms-2">
+              Mostrando {incidenciasVisibles.length} de{" "}
+              {incidenciasFiltradas.length}
+            </small>
+          </div>
+
+          {incidenciasFiltradas.length > limiteIncidenciasContraidas && (
+            <button
+              type="button"
+              className="btn btn-sm btn-outline-secondary"
+              onClick={() =>
+                setListaIncidenciasExpandida((estadoActual) => !estadoActual)
+              }
+            >
+              <i
+                className={`bi ${
+                  listaIncidenciasExpandida
+                    ? "bi-arrows-collapse"
+                    : "bi-arrows-expand"
+                } me-1`}
+              ></i>
+              {listaIncidenciasExpandida
+                ? "Contraer lista"
+                : "Expandir lista"}
+            </button>
+          )}
+        </div>
+
+        <div className="table-responsive">
+          <table className="table table-hover align-middle mb-0">
+            <thead>
+              <tr>
+                <th>Ticket</th>
+                <th>Sala</th>
+                <th>Equipo</th>
+                <th>Tipo</th>
+                <th>Prioridad</th>
+                <th>Estado</th>
+                <th>Evidencia</th>
+                <th>Reporta</th>
+                <th>Acciones</th>
+              </tr>
+            </thead>
+
+            <tbody>
+              {incidenciasFiltradas.length === 0 ? (
+                <tr>
+                  <td colSpan="9" className="text-center text-muted">
+                    No existen incidencias para los filtros seleccionados.
+                  </td>
+                </tr>
+              ) : (
+                incidenciasVisibles.map((incidencia) => (
+                  <tr key={incidencia.id_incidencia}>
+                    <td>
+                      <strong>{incidencia.ticket}</strong>
+                      <br />
+                      <small>{incidencia.titulo}</small>
+                      {incidencia.ticket_externo && (
+                        <>
+                          <br />
+                          <span className="badge bg-info text-dark mt-1">
+                            {incidencia.ticket_externo}
+                          </span>
+                        </>
+                      )}
+                    </td>
+
+                    <td>
+                      {incidencia.codigo_sala}
+                      <br />
+                      <small>{incidencia.sala}</small>
+                    </td>
+
+                    <td>
+                      {incidencia.nombre_equipo || "Sin equipo especifico"}
+                      <br />
+                      <small>{incidencia.tipo_equipo || ""}</small>
+                    </td>
+
+                    <td>{incidencia.tipo_incidencia}</td>
+
+                    <td>
+                      <span
+                        className={`badge ${obtenerClasePrioridad(
+                          incidencia.prioridad,
+                        )}`}
+                      >
+                        {incidencia.prioridad}
+                      </span>
+                    </td>
+
+                    <td>
+                      <span
+                        className={`badge ${obtenerClaseEstado(
+                          incidencia.estado_incidencia,
+                        )}`}
+                      >
+                        {incidencia.estado_incidencia}
+                      </span>
+                    </td>
+
+                    <td>
+                      {incidencia.evidencia_ruta ? (
+                        <div className="d-flex align-items-center gap-2">
+                          <img
+                            src={obtenerUrlEvidencia(incidencia)}
+                            alt="Miniatura evidencia"
+                            style={{
+                              width: "90px",
+                              height: "60px",
+                              objectFit: "cover",
+                              borderRadius: "8px",
+                              border: "1px solid #dee2e6",
+                              backgroundColor: "#f8f9fa",
+                            }}
+                          />
+
+                          <button
+                            type="button"
+                            className="btn btn-sm btn-outline-info"
+                            title="Ver evidencia"
+                            onClick={() => verEvidencia(incidencia)}
+                          >
+                            <i className="bi bi-search"></i>
+                          </button>
+                        </div>
+                      ) : (
+                        <span className="text-muted">Sin evidencia</span>
+                      )}
+                    </td>
+
+                    <td>{incidencia.usuario_reporta}</td>
+
+                    <td>
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-outline-primary me-1"
+                        title="Ver detalle"
+                        onClick={() => verDetalleIncidencia(incidencia)}
+                      >
+                        <i className="bi bi-eye"></i>
+                      </button>
+
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-outline-secondary me-1"
+                        title="Ver historial"
+                        onClick={() => verHistorialIncidencia(incidencia)}
+                      >
+                        <i className="bi bi-clock-history"></i>
+                      </button>
+
+                      {puedeEditarIncidencia(incidencia) && (
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-outline-warning me-1"
+                          title="Editar datos"
+                          onClick={() => manejarEdicionIncidencia(incidencia)}
+                        >
+                          <i className="bi bi-pencil"></i>
+                        </button>
+                      )}
+
+                      {puedeAgregarEvidencia(incidencia) && (
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-outline-info me-1"
+                          title="Agregar evidencia"
+                          onClick={() => manejarEvidenciaAdicional(incidencia)}
+                        >
+                          <i className="bi bi-image"></i>
+                        </button>
+                      )}
+
+                      {puedeGestionarEstadoIncidencia() && (
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-outline-success"
+                          title="Cambiar estado"
+                          onClick={() => manejarCambioEstado(incidencia)}
+                        >
+                          <i className="bi bi-pencil-square"></i>
+                        </button>
+                      )}
+
+                      {puedeReabrirIncidencia(incidencia) && (
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-outline-danger ms-1"
+                          title="Reabrir incidencia"
+                          onClick={() => manejarReaperturaIncidencia(incidencia)}
+                        >
+                          <i className="bi bi-arrow-counterclockwise"></i>
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      </>
+      )}
+    </MainLayout>
+  );
+}
+
+export default IncidenciasPage;
+
+
+
+
+
+

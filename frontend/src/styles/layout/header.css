@@ -1,0 +1,57 @@
+.sgtsl-header {
+  background-color: #0D2B63;
+  color: white;
+  padding: 18px 30px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  min-height: 76px;
+}
+
+.sgtsl-header-menu-btn {
+  flex: 0 0 auto;
+  min-width: 38px;
+}
+
+.sgtsl-header-logo {
+  width: 48px;
+  height: 48px;
+  object-fit: contain;
+}
+
+.sgtsl-header-user {
+  max-width: 240px;
+  min-width: 0;
+}
+
+@media (max-width: 767.98px) {
+  .sgtsl-header {
+    align-items: stretch;
+    padding: 16px;
+  }
+
+  .sgtsl-header > div {
+    min-width: 0;
+    width: auto;
+  }
+
+  .sgtsl-header > div:first-child {
+    flex: 1 1 auto;
+  }
+
+  .sgtsl-header > div:last-child {
+    flex: 0 1 auto;
+    justify-content: space-between;
+  }
+
+  .sgtsl-header-logo {
+    height: 42px;
+    width: 42px;
+  }
+
+  .sgtsl-header-user {
+    max-width: calc(100vw - 96px);
+    text-align: left !important;
+  }
+}

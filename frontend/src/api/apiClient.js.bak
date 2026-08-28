@@ -1,0 +1,60 @@
+﻿// Cliente centralizado para consumir la API REST del backend.
+// Permite reutilizar la URL base y agregar el token JWT automáticamente.
+
+import axios from 'axios';
+
+const apiClient = axios.create({
+  baseURL: 'http://localhost:3000/api',
+  timeout: 15000
+});
+
+// Interceptor de solicitud.
+// Antes de enviar cada petición, revisa si existe token en localStorage.
+apiClient.interceptors.request.use(
+  (config) => {
+    const token = localStorage.getItem('sgtsl_token');
+
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+
+    // Evita que listados e historiales muestren informacion anterior del navegador.
+    config.headers['Cache-Control'] = 'no-cache';
+    config.headers.Pragma = 'no-cache';
+    config.headers.Expires = '0';
+
+    if (config.method?.toLowerCase() === 'get') {
+      config.params = {
+        ...(config.params || {}),
+        _ts: Date.now()
+      };
+    }
+
+    return config;
+  },
+  (error) => Promise.reject(error)
+);
+
+// Interceptor de respuesta.
+// Si el backend responde 401, se limpia la sesión y se redirige al login.
+apiClient.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response && error.response.status === 401) {
+      const url = error.config?.url || '';
+      const estaEnLogin = window.location.pathname === '/login';
+      const esRutaAuth = url.includes('/auth/');
+
+      if (!estaEnLogin && !esRutaAuth) {
+        localStorage.removeItem('sgtsl_token');
+        localStorage.removeItem('sgtsl_usuario');
+        window.location.href = '/login';
+      }
+    }
+
+    return Promise.reject(error);
+  }
+);
+
+export default apiClient;
+
